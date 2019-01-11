@@ -841,7 +841,7 @@ export const PikeLanguage: Language = {
   skipDiffViaSchema: [],
   allowMissingNull: true,
   features: ["union"],
-  output: "TopLevel.pike",
+  output: "TopLevel.pmod",
   topLevel: "TopLevel",
   skipJSON: [],
   skipMiscJSON: false,

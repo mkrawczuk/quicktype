@@ -1,16 +1,74 @@
-import { ConvenienceRenderer } from "../ConvenienceRenderer";
+import { ConvenienceRenderer, ForbiddenWordsInfo } from "../ConvenienceRenderer";
 import { Name, Namer, funPrefixNamer } from "../Naming";
 import { Option } from "../RendererOptions";
 import { RenderContext } from "../Renderer";
-import { MultiWord, Sourcelike, multiWord, parenIfNeeded, singleWord } from "../Source";
+import { MultiWord, Sourcelike, modifySource, multiWord, parenIfNeeded, singleWord } from "../Source";
 import { TargetLanguage } from "../TargetLanguage";
 import { Type, ClassType, EnumType, UnionType } from "../Type";
 import { matchType, nullableFromUnion, removeNullFromUnion } from "../TypeUtils";
-import { legalizeCharacters, isLetterOrUnderscoreOrDigit, stringEscape, makeNameStyle } from "../support/Strings";
+import {
+    camelCase,
+    legalizeCharacters,
+    isLetterOrUnderscoreOrDigit,
+    stringEscape,
+    makeNameStyle
+} from "../support/Strings";
 
 export const pikeOptions = {};
 
-const baseClassName = "JsonEncodable";
+const keywords = [
+    "nomask",
+    "final",
+    "static",
+    "extern",
+    "private",
+    "local",
+    "public",
+    "protected",
+    "inline",
+    "optional",
+    "variant",
+    "void",
+    "mixed",
+    "array",
+    "__attribute__",
+    "__deprecated__",
+    "mapping",
+    "multiset",
+    "object",
+    "function",
+    "__func__",
+    "program",
+    "string",
+    "float",
+    "int",
+    "enum",
+    "typedef",
+    "if",
+    "do",
+    "for",
+    "while",
+    "else",
+    "foreach",
+    "catch",
+    "gauge",
+    "class",
+    "break",
+    "case",
+    "constant",
+    "continue",
+    "default",
+    "import",
+    "inherit",
+    "lambda",
+    "predef",
+    "return",
+    "sscanf",
+    "switch",
+    "typeof",
+    "global"
+];
+
 const legalizeName = legalizeCharacters(isLetterOrUnderscoreOrDigit);
 const namingFunction = funPrefixNamer("namer", makeNameStyle("underscore", legalizeName));
 const namedTypeNamingFunction = funPrefixNamer("namer", makeNameStyle("pascal", legalizeName));
@@ -30,13 +88,13 @@ export class PikeTargetLanguage extends TargetLanguage {
 
 export class PikeRenderer extends ConvenienceRenderer {
     protected emitSourceStructure(): void {
-        this.emitBaseClass();
         this.forEachNamedType(
             "leading-and-interposing",
-            (c: ClassType, className: Name) => this.emitClass(c, className),
+            (c: ClassType, className: Name) => this.emitClassDefinition(c, className),
             (e, n) => this.emitEnum(e, n),
             (u, n) => this.emitUnion(u, n)
         );
+        this.emitConvertModule();
     }
 
     protected makeEnumCaseNamer(): Namer {
@@ -54,8 +112,20 @@ export class PikeRenderer extends ConvenienceRenderer {
         return namingFunction;
     }
 
-    protected forbiddenNamesForObjectProperties(): string[] {
-        return ["private", "protected", "public", "return"];
+    protected forbiddenNamesForGlobalNamespace(): string[] {
+        return [...keywords];
+    }
+
+    protected forbiddenForObjectProperties(_c: ClassType, _className: Name): ForbiddenWordsInfo {
+        return { names: [], includeGlobalForbidden: true };
+    }
+
+    protected forbiddenForEnumCases(_e: EnumType, _enumName: Name): ForbiddenWordsInfo {
+        return { names: [], includeGlobalForbidden: true };
+    }
+
+    protected forbiddenForUnionMembers(_u: UnionType, _unionName: Name): ForbiddenWordsInfo {
+        return { names: [], includeGlobalForbidden: true };
     }
 
     protected sourceFor(t: Type): MultiWord {
@@ -91,50 +161,10 @@ export class PikeRenderer extends ConvenienceRenderer {
         );
     }
 
-    private emitBlock(line: Sourcelike, f: () => void): void {
-        this.emitLine(line, " {");
-        this.indent(f);
-        this.emitLine("}");
-    }
-
-    private emitBaseClass(): void {
-        this.emitBlock(["class ", baseClassName, ";"], () => {
-            this.emitBlock(["string encode_json() "], () => {
-                this.emitLine(["array(string) members = map(indices(this), lambda(string idx) {"]);
-                this.indent(() => {
-                    this.emitLine(["return callablep(this[idx])? 0 : idx;"]);
-                });
-                this.emitLine(["});"]);
-                this.emitLine(["members -= ({0});"]);
-                this.ensureBlankLine();
-                this.emitLine(["array values = map(members, lambda(string idx) {"]);
-                this.indent(() => {
-                    this.emitLine(["return this[idx];"]);
-                });
-                this.emitLine(["});"]);
-                this.ensureBlankLine();
-                this.emitLine(["return Standards.JSON.encode(mkmapping(members, values));"]);
-            });
-        });
-    }
-
-    private emitClassMembers(c: ClassType): void {
-        let table: Sourcelike[][] = [];
-        this.forEachClassProperty(c, "none", (name, jsonName, p) => {
-            const pikeType = this.sourceFor(p.type).source;
-
-            table.push([[pikeType, " "], [name, "; "], ['// json: "', stringEscape(jsonName), '"']]);
-        });
-        this.emitTable(table);
-    }
-
-    private emitClass(c: ClassType, className: Name): void {
+    protected emitClassDefinition(c: ClassType, className: Name): void {
         this.emitDescription(this.descriptionForType(c));
         this.emitBlock(["class ", className], () => {
-            this.emitLine(["inherit ", baseClassName, ";"]);
-            this.ensureBlankLine();
             this.emitClassMembers(c);
-            this.ensureBlankLine();
         });
     }
 
@@ -172,5 +202,51 @@ export class PikeRenderer extends ConvenienceRenderer {
             unionName,
             ";"
         ]);
+    }
+
+    private emitConvertModule(): void {
+        this.emitBlock(["class Convert "], () => {
+            this.emitConvertModuleBody();
+        });
+    }
+
+    private emitConvertModuleBody(): void {
+        this.forEachTopLevel("leading-and-interposing", (t, name) => {
+            this.emitBlock([this.deserializerFunctionLine(t, name), " "], () => {});
+            this.ensureBlankLine();
+            this.emitBlock([this.serializerFunctionLine(t, name), " "], () => {});
+        });
+    }
+
+    private emitBlock(line: Sourcelike, f: () => void): void {
+        this.emitLine(line, " {");
+        this.indent(f);
+        this.emitLine("}");
+    }
+
+    private emitClassMembers(c: ClassType): void {
+        let table: Sourcelike[][] = [];
+        this.forEachClassProperty(c, "none", (name, jsonName, p) => {
+            const pikeType = this.sourceFor(p.type).source;
+
+            table.push([[pikeType, " "], [name, "; "], ['// json: "', stringEscape(jsonName), '"']]);
+        });
+        this.emitTable(table);
+    }
+
+    private deserializerFunctionName(name: Name): Sourcelike {
+        return ["to_", name];
+    }
+
+    private deserializerFunctionLine(_t: Type, name: Name): Sourcelike {
+        return [name, " ", this.deserializerFunctionName(name), "(string json_str)"];
+    }
+
+    private serializerFunctionName(name: Name): Sourcelike {
+        return [name, "_to_json"];
+    }
+
+    private serializerFunctionLine(_t: Type, name: Name): Sourcelike {
+        return ["string ", this.serializerFunctionName(name), "(", name, " value)"];
     }
 }
