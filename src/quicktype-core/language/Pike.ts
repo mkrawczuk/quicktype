@@ -104,7 +104,7 @@ export class PikeRenderer extends ConvenienceRenderer {
         this.forEachNamedType(
             "leading-and-interposing",
             (c: ClassType, className: Name) => this.emitClassDefinition(c, className),
-            (e, n) => this.emitEnum(e, n),
+            e => this.emitEnum(e),
             (u, n) => this.emitUnion(u, n)
         );
     }
@@ -165,7 +165,7 @@ export class PikeRenderer extends ConvenienceRenderer {
                 valueSource = this.sourceFor(v).source;
                 return singleWord(["mapping(string:", valueSource, ")"]);
             },
-            _enumType => singleWord("enum"),
+            _enumType => singleWord("string"),
             unionType => {
                 if (nullableFromUnion(unionType) !== null) {
                     const children = Array.from(unionType.getChildren()).map(c => parenIfNeeded(this.sourceFor(c)));
@@ -188,14 +188,12 @@ export class PikeRenderer extends ConvenienceRenderer {
         this.emitDecodingFunction(className, c);
     }
 
-    protected emitEnum(e: EnumType, enumName: Name): void {
-        this.emitBlock([e.kind, " ", enumName], () => {
-            let table: Sourcelike[][] = [];
-            this.forEachEnumCase(e, "none", (name, jsonName) => {
-                table.push([[name, ' = "', stringEscape(jsonName), '", '], ['// json: "', jsonName, '"']]);
-            });
-            this.emitTable(table);
+    protected emitEnum(e: EnumType): void {
+        let table: Sourcelike[][] = [];
+        this.forEachEnumCase(e, "none", (name, jsonName) => {
+            table.push([["constant ", name, ' = "', stringEscape(jsonName), '"; '], ['// json: "', jsonName, '"']]);
         });
+        this.emitTable(table);
     }
 
     protected emitUnion(u: UnionType, unionName: Name): void {
@@ -236,8 +234,8 @@ export class PikeRenderer extends ConvenienceRenderer {
     private emitClassMembers(c: ClassType): void {
         let table: Sourcelike[][] = [];
         this.forEachClassProperty(c, "none", (name, jsonName, p) => {
-            const pikeType = this.sourceFor(p.type).source;
-
+            let pikeType: Sourcelike = this.sourceFor(p.type).source;
+            if (p.type instanceof EnumType || p.type instanceof UnionType) pikeType = "mixed";
             table.push([[pikeType, " "], [name, "; "], ['// json: "', jsonName, '"']]);
         });
         this.emitTable(table);
